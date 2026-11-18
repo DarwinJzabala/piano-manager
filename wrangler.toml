@@ -1,0 +1,13 @@
+name = "piano-class-manager"
+compatibility_date = "2026-11-18"
+pages_build_output_dir = "./public"
+
+[vars]
+# Completar antes del despliegue. Sin ambos valores la API pública deniega acceso.
+ACCESS_TEAM_DOMAIN = ""
+ACCESS_AUD = ""
+
+[[d1_databases]]
+binding = "piano_manager_db"
+database_name = "piano-manager-db"
+database_id = "24fe2dd8-65f8-4e18-afcd-138f9807c062"

@@ -1,15 +1,23 @@
 export async function api(path, options = {}) {
+  const headers = { 'Content-Type': 'application/json', ...(options.headers || {}) };
   const res = await fetch(`/api/${path}`, {
-    headers: { 'Content-Type': 'application/json', ...(options.headers || {}) },
-    ...options
+    ...options,
+    headers,
+    credentials: 'same-origin'
   });
   if (!res.ok) {
     let message = `Error HTTP ${res.status}`;
+    let data = null;
     try {
-      const data = await res.json();
+      data = await res.json();
       if (data && data.error) message = data.error;
     } catch (_) { /* respuesta no JSON */ }
-    throw new Error(message);
+    if (res.status === 401 && !path.startsWith('auth/'))
+      window.dispatchEvent(new CustomEvent('pm:unauthorized', { detail: message }));
+    const error = new Error(message);
+    error.status = res.status;
+    error.data = data;
+    throw error;
   }
   return res.json();
 }

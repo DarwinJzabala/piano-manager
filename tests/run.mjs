@@ -11,8 +11,10 @@ await new Promise(resolve=>probe.close(resolve));
 const cli = 'node_modules/wrangler/bin/wrangler.js';
 let server;
 try {
-  if (spawnSync(process.execPath,[cli,'d1','execute','piano-manager-db','--local','--persist-to',temp,'--file','schema.sql'],{stdio:'inherit'}).status !== 0)
-    throw Error('No se pudo inicializar la base de prueba');
+  const d1 = file => spawnSync(process.execPath,[cli,'d1','execute','piano-manager-db','--local','--persist-to',temp,'--file',file],{stdio:'inherit'}).status === 0;
+  if (!d1('schema.sql')) throw Error('No se pudo inicializar la base de prueba');
+  if (!d1('migrations/001_income.sql') || !d1('migrations/002_auth.sql'))
+    throw Error('No se pudieron aplicar las migraciones de prueba');
   server = spawn(process.execPath,[cli,'pages','dev','public','--persist-to',temp,'--ip','127.0.0.1','--port',port,'--binding','LOCAL_DEV=1'],{stdio:'inherit'});
   for (let i=0;i<60;i++) {
     if (server.exitCode !== null) throw Error('Pages dev se detuvo');

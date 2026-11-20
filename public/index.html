@@ -2,7 +2,8 @@
 <html lang="es">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+  <meta name="theme-color" content="#355c4d">
   <title>Piano · Manager</title>
   <link rel="stylesheet" href="/styles.css">
   <script async crossorigin="anonymous" integrity="sha384-vtjasyidUo0kW94K5MXDXntzOJpQgBKXmE7e2Ga4LG0skTTLeBi97eFAXsqewJjw" src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
@@ -24,10 +25,13 @@
         <a href="#ingresos-historial" data-nav="ingresos-historial">Historial de ingresos</a>
         <a href="#ingresos-reportes" data-nav="ingresos-reportes">Reportes de ingresos</a>
         <a href="#tarifas" data-nav="tarifas">Tarifas</a>
+        <a href="#usuarios" data-nav="usuarios" hidden>Usuarios</a>
+        <a href="#perfil" data-nav="perfil">Mi perfil</a>
         <a href="#respaldo" data-nav="respaldo">Respaldo</a>
       </nav>
       <div class="sidebar-foot" id="user-info"></div>
     </aside>
+    <div class="nav-overlay" id="nav-overlay" hidden></div>
 
     <div class="content">
       <header class="topbar">
@@ -38,6 +42,8 @@
       <main class="main" id="main"></main>
     </div>
   </div>
+
+  <div class="auth-screen" id="auth-screen" hidden></div>
 
   <dialog class="modal" id="app-modal">
     <div class="modal-head">

@@ -9,8 +9,11 @@
     "dev": "wrangler pages dev ./public --ip 127.0.0.1 --binding LOCAL_DEV=1",
     "deploy": "wrangler pages deploy ./public",
     "db:init": "wrangler d1 execute piano-manager-db --local --file=./schema.sql",
-    "db:migrate": "wrangler d1 execute piano-manager-db --local --file=./migrations/001_income.sql",
-    "db:init:remote": "wrangler d1 execute piano-manager-db --remote --file=./schema.sql"
+    "db:migrate": "wrangler d1 execute piano-manager-db --local --file=./migrations/001_income.sql && wrangler d1 execute piano-manager-db --local --file=./migrations/002_auth.sql",
+    "db:migrate:remote": "wrangler d1 execute piano-manager-db --remote --file=./migrations/002_auth.sql",
+    "db:init:remote": "wrangler d1 execute piano-manager-db --remote --file=./schema.sql",
+    "user:create": "node scripts/create-user.mjs",
+    "user:create:remote": "node scripts/create-user.mjs --remote"
   },
   "devDependencies": {
     "playwright-core": "^1.65.1",

@@ -114,8 +114,8 @@ CREATE TABLE IF NOT EXISTS tasks (
 CREATE INDEX IF NOT EXISTS idx_tasks_due ON tasks(due_date, status);
 CREATE INDEX IF NOT EXISTS idx_tasks_student ON tasks(student_id);
 
--- Preparado para acceso con usuario/contraseña en el futuro.
--- Hoy la autenticación la gestiona Cloudflare Access.
+-- Usuarios de la aplicación. Las contraseñas se guardan como PBKDF2-SHA256 con sal.
+-- Cloudflare Access puede actuar además como primera capa en el edge.
 CREATE TABLE IF NOT EXISTS users (
   id            INTEGER PRIMARY KEY AUTOINCREMENT,
   email         TEXT NOT NULL UNIQUE,
@@ -126,6 +126,8 @@ CREATE TABLE IF NOT EXISTS users (
   created_at    TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
+-- sessions.token guarda siempre un HASH del token de la cookie, nunca el token en claro.
+-- Formato: "r:<hash>" (sesión persistente) o "s:<hash>" (sesión de navegador).
 CREATE TABLE IF NOT EXISTS sessions (
   id         INTEGER PRIMARY KEY AUTOINCREMENT,
   user_id    INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -171,3 +173,42 @@ CREATE TABLE IF NOT EXISTS income_entries (
 );
 CREATE INDEX IF NOT EXISTS idx_income_date ON income_entries(class_date);
 CREATE INDEX IF NOT EXISTS idx_income_modality ON income_entries(modality_code, class_date);
+
+-- ---------------------------------------------------------------------------
+-- Autenticación (migración 002)
+-- ---------------------------------------------------------------------------
+
+CREATE TABLE IF NOT EXISTS schema_migrations (
+  version     TEXT PRIMARY KEY,
+  applied_at  TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+INSERT OR IGNORE INTO schema_migrations(version) VALUES ('001_income'), ('002_auth');
+
+-- Control de fuerza bruta: clave = hash(IP + identificador).
+CREATE TABLE IF NOT EXISTS login_attempts (
+  key          TEXT PRIMARY KEY,
+  attempts     INTEGER NOT NULL DEFAULT 0,
+  locked_until TEXT,
+  updated_at   TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Restablecimiento de contraseña: token de un solo uso guardado con hash.
+CREATE TABLE IF NOT EXISTS password_resets (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id     INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  token_hash  TEXT NOT NULL UNIQUE,
+  expires_at  TEXT NOT NULL,
+  used_at     TEXT,
+  created_at  TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_password_resets_user ON password_resets(user_id, expires_at);
+
+-- Asociación opcional de cada registro con su propietario (preparado para roles futuros).
+CREATE TABLE IF NOT EXISTS record_owners (
+  entity_type TEXT NOT NULL,
+  entity_id   INTEGER NOT NULL,
+  owner_id    INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  created_at  TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (entity_type, entity_id)
+);
+CREATE INDEX IF NOT EXISTS idx_record_owners_owner ON record_owners(owner_id, entity_type);

@@ -1,6 +1,11 @@
 // Piano Class Manager — API REST (Cloudflare Pages Function + D1)
 
 import { identity } from '../../lib/access.js';
+import {
+  SESSION_COOKIE, REMEMBER_COOKIE, hashPassword, verifyPassword, makeCookie, clearCookie,
+  getSession, maybeRenew, createSession, destroySession, destroyAllSessions, rememberedUsername,
+  loginKey, loginLocked, recordLoginFailure, clearLoginFailures, randomToken, sha256
+} from '../../lib/auth.js';
 
 function json(data, status = 200) {
   return new Response(JSON.stringify(data), {
@@ -708,6 +713,179 @@ async function incomeHandler(url, env) {
   });
 }
 
+/* ------------------------------ Autenticación ------------------------------ */
+const ROLES = ['owner', 'admin', 'profesor', 'monitor'];
+const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/;
+function isAdmin(user) { return ['owner', 'admin'].includes(user?.role); }
+function publicUser(u) { return { id: u.id, name: u.name, email: u.email, role: u.role }; }
+function withCookies(res, cookies) {
+  (cookies || []).filter(Boolean).forEach(c => res.headers.append('Set-Cookie', c));
+  return res;
+}
+function credentials(b) {
+  const email = String(b.email || b.username || '').trim().toLowerCase();
+  const password = String(b.password || '');
+  if (!EMAIL_RE.test(email)) return { error: 'Escribe un correo electrónico válido' };
+  if (password.length < 8) return { error: 'La contraseña debe tener al menos 8 caracteres' };
+  return { email, password };
+}
+async function createUser(db, rawEnv, b) {
+  const c = credentials(b);
+  if (c.error) return { error: c.error };
+  const role = ROLES.includes(b.role) ? b.role : 'profesor';
+  const name = String(b.name || '').trim().slice(0, 120) || c.email.split('@')[0];
+  const dup = await first(db, 'SELECT id FROM users WHERE lower(email) = ?', [c.email]);
+  if (dup) return { error: 'Ya existe un usuario con ese correo', status: 409 };
+  const password_hash = await hashPassword(c.password, rawEnv);
+  const id = await insert(db, `INSERT INTO users (email, name, password_hash, role, active)
+    VALUES (?, ?, ?, ?, 1)`, [c.email, name, password_hash, role]);
+  return { user: { id, email: c.email, name, role } };
+}
+
+async function authHandler(method, p, url, env, request, rawEnv, session) {
+  const db = env.DB;
+  const sub = p[1] || '';
+
+  if (sub === 'me' && method === 'GET') {
+    return json({
+      authenticated: !!session,
+      user: session ? publicUser(session.user) : null,
+      remembered_username: await rememberedUsername(request)
+    });
+  }
+
+  // Sólo disponible en desarrollo local: crear el primer administrador sin exponer registro público.
+  if (sub === 'bootstrap' && method === 'POST') {
+    if (rawEnv.LOCAL_DEV !== '1') return fail('Ruta no disponible', 404);
+    const count = await first(db, 'SELECT COUNT(*) AS n FROM users');
+    if (Number(count?.n) > 0) return fail('Ya existe al menos un usuario', 409);
+    const b = await body(request);
+    const created = await createUser(db, rawEnv, { ...b, role: 'owner' });
+    if (created.error) return fail(created.error, created.status || 400);
+    return json({ ok: true, user: created.user }, 201);
+  }
+
+  if (sub === 'login' && method === 'POST') {
+    const b = await body(request);
+    const identifier = String(b.username || b.email || '').trim().toLowerCase();
+    const password = String(b.password || '');
+    if (!identifier || !password) return fail('Escribe tu usuario y contraseña', 400);
+    if (identifier.length > 254 || password.length > 200) return fail('Datos demasiado largos', 400);
+    const key = await loginKey(request, identifier);
+    if (await loginLocked(db, key))
+      return fail('Demasiados intentos fallidos. Espera unos minutos antes de volver a intentar.', 429);
+    const row = await first(db, 'SELECT * FROM users WHERE lower(email) = ? AND active = 1 LIMIT 1', [identifier]);
+    const valid = row?.password_hash ? await verifyPassword(password, row.password_hash, rawEnv) : false;
+    if (!valid) {
+      await recordLoginFailure(db, key);
+      return fail('Usuario o contraseña incorrectos', 401);
+    }
+    await clearLoginFailures(db, key);
+    const cookie = await createSession(db, row, !!b.keep_signed_in, request);
+    const remembered = b.remember_user
+      ? makeCookie(REMEMBER_COOKIE, encodeURIComponent(row.email), { maxAge: 365 * 86400, request })
+      : clearCookie(REMEMBER_COOKIE, request);
+    return withCookies(json({ ok: true, user: publicUser(row) }), [cookie, remembered]);
+  }
+
+  if (sub === 'logout' && method === 'POST') {
+    if (session) await destroySession(db, request);
+    return withCookies(json({ ok: true }), [clearCookie(SESSION_COOKIE, request)]);
+  }
+
+  if (sub === 'users') {
+    if (!session || !isAdmin(session.user)) return fail('No tienes permiso para administrar usuarios', 403);
+    if (method === 'GET') {
+      return json(await all(db, `SELECT id, email, name, role, active, created_at
+        FROM users ORDER BY id`));
+    }
+    if (method === 'POST') {
+      const created = await createUser(db, rawEnv, await body(request));
+      if (created.error) return fail(created.error, created.status || 400);
+      return json({ ok: true, user: created.user }, 201);
+    }
+    if (method === 'PUT' && p[2]) {
+      const b = await body(request);
+      const target = await first(db, 'SELECT * FROM users WHERE id = ?', [p[2]]);
+      if (!target) return fail('Usuario no encontrado', 404);
+      const role = b.role === undefined ? target.role : String(b.role);
+      if (!ROLES.includes(role)) return fail('Rol no válido');
+      const active = b.active === undefined ? target.active : ([false, 0, '0'].includes(b.active) ? 0 : 1);
+      if (target.id === session.user.id && !active) return fail('No puedes desactivar tu propio usuario');
+      let password_hash = target.password_hash;
+      if (b.password) {
+        if (String(b.password).length < 8) return fail('La contraseña debe tener al menos 8 caracteres');
+        password_hash = await hashPassword(String(b.password), rawEnv);
+      }
+      await run(db, 'UPDATE users SET role = ?, active = ?, password_hash = ? WHERE id = ?',
+        [role, active, password_hash, target.id]);
+      if (!active || b.password) await destroyAllSessions(db, target.id);
+      return json({ ok: true });
+    }
+    return fail('Ruta no encontrada', 404);
+  }
+
+  if (sub === 'password' && method === 'POST') {
+    if (!session) return fail('Sesión no válida', 401);
+    const b = await body(request);
+    const row = await first(db, 'SELECT * FROM users WHERE id = ?', [session.user.id]);
+    if (!row || !await verifyPassword(String(b.current_password || ''), row.password_hash, rawEnv))
+      return fail('La contraseña actual es incorrecta', 401);
+    const next = String(b.new_password || '');
+    if (next.length < 8) return fail('La nueva contraseña debe tener al menos 8 caracteres');
+    await run(db, 'UPDATE users SET password_hash = ? WHERE id = ?', [await hashPassword(next, rawEnv), row.id]);
+    await destroyAllSessions(db, row.id);
+    const cookie = await createSession(db, row, session.type === 'r', request);
+    return withCookies(json({ ok: true }), [cookie]);
+  }
+
+  if (sub === 'forgot' && method === 'POST') {
+    if (!rawEnv.RESEND_API_KEY || !rawEnv.RESET_FROM_EMAIL)
+      return fail('La recuperación por correo no está configurada. Configura RESEND_API_KEY y RESET_FROM_EMAIL.', 503);
+    const b = await body(request);
+    const email = String(b.email || '').trim().toLowerCase();
+    const row = EMAIL_RE.test(email)
+      ? await first(db, 'SELECT id, email, name FROM users WHERE lower(email) = ? AND active = 1', [email])
+      : null;
+    if (row) {
+      const token = randomToken(24);
+      await run(db, `INSERT INTO password_resets (user_id, token_hash, expires_at)
+        VALUES (?, ?, datetime('now', '+60 minutes'))`, [row.id, await sha256(token)]);
+      const base = String(rawEnv.APP_BASE_URL || url.origin).replace(/\/$/, '');
+      const link = `${base}/#restablecer?token=${encodeURIComponent(token)}`;
+      const sent = await fetch('https://api.resend.com/emails', {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${rawEnv.RESEND_API_KEY}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          from: rawEnv.RESET_FROM_EMAIL, to: row.email,
+          subject: 'Restablece tu contraseña de Piano Manager',
+          html: `<p>Hola ${row.name || ''}:</p><p>Usa este enlace para restablecer tu contraseña:</p>` +
+                `<p><a href="${link}">Restablecer contraseña</a></p><p>Vence en 60 minutos.</p>`
+        })
+      });
+      if (!sent.ok) return fail('No se pudo enviar el correo de recuperación', 502);
+    }
+    return json({ ok: true, message: 'Si el correo está registrado, recibirás un enlace de recuperación.' });
+  }
+
+  if (sub === 'reset' && method === 'POST') {
+    const b = await body(request);
+    const token = String(b.token || '');
+    const password = String(b.password || '');
+    if (!/^[0-9a-f]{48}$/.test(token)) return fail('El enlace de recuperación no es válido', 400);
+    if (password.length < 8 || password.length > 200) return fail('La contraseña debe tener al menos 8 caracteres', 400);
+    const row = await first(db, `SELECT * FROM password_resets
+      WHERE token_hash = ? AND used_at IS NULL AND expires_at > datetime('now') LIMIT 1`, [await sha256(token)]);
+    if (!row) return fail('El enlace no es válido, ya se usó o venció', 400);
+    await run(db, "UPDATE password_resets SET used_at = datetime('now') WHERE id = ?", [row.id]);
+    await run(db, 'UPDATE users SET password_hash = ? WHERE id = ?', [await hashPassword(password, rawEnv), row.user_id]);
+    await destroyAllSessions(db, row.user_id);
+    return json({ ok: true });
+  }
+
+  return fail('Ruta de autenticación no encontrada', 404);
+}
+
 /* --------------------------------- Router --------------------------------- */
 export async function onRequest(context) {
   const { request } = context;
@@ -717,33 +895,56 @@ export async function onRequest(context) {
   const p = segments(url);
   const method = request.method;
   try {
-    const user = await identity(request, context.env);
-    if (!user) return fail('Se requiere acceso autorizado mediante Cloudflare Access.', 403);
+    const accessUser = await identity(request, context.env);
+    if (!accessUser) return fail('Se requiere acceso autorizado mediante Cloudflare Access.', 403);
     if (method !== 'GET' && request.headers.has('Origin') && request.headers.get('Origin') !== url.origin) return fail('Origen no permitido', 403);
     if (!p.length) return fail('Ruta API no encontrada', 404);
 
-    switch (p[0]) {
-      case 'health':
-        await first(env.DB, 'SELECT id FROM students LIMIT 1');
-        return json({ ok: true, database: 'piano_manager_db' });
-      case 'me': return json(user);
-      case 'students': return await studentsHandler(method, p, url, env, request);
-      case 'levels': return await levelsHandler(method, p, env, request);
-      case 'program': return await programHandler(method, p, url, env, request);
-      case 'schedules': return await schedulesHandler(method, p, url, env, request);
-      case 'classes': return await classesHandler(method, p, url, env, request);
-      case 'attendance': return await attendanceHandler(url, env);
-      case 'tasks': return await tasksHandler(method, p, url, env, request);
-      case 'dashboard': return await dashboardHandler(url, env);
-      case 'reports':
-        if (p[1] === 'monthly') return await reportHandler(url, env);
-        return fail('Ruta no encontrada', 404);
-      case 'history': return await historyHandler(url, env);
-      case 'modalities': return await modalitiesHandler(method, p, env, request);
-      case 'income': return await incomeHandler(url, env);
-      case 'backup': return await backupHandler(method, env, request);
-      default: return fail('Ruta no encontrada', 404);
+    // /api/health se usa para monitoreo y para iniciar el entorno de pruebas.
+    if (p[0] === 'health') {
+      await first(env.DB, 'SELECT id FROM students LIMIT 1');
+      return json({ ok: true, database: 'piano_manager_db' });
     }
+
+    // /api/auth/* decide qué rutas requieren sesión; el resto la exige siempre.
+    const session = await getSession(env.DB, request);
+    if (p[0] !== 'auth' && !session)
+      return fail('Sesión no válida o expirada. Inicia sesión nuevamente.', 401);
+
+    let res;
+    if (p[0] === 'auth') {
+      res = await authHandler(method, p, url, env, request, context.env, session);
+    } else {
+      switch (p[0]) {
+        case 'me': res = json({ ...publicUser(session.user), access: accessUser }); break;
+      case 'students': res = await studentsHandler(method, p, url, env, request); break;
+      case 'levels': res = await levelsHandler(method, p, env, request); break;
+      case 'program': res = await programHandler(method, p, url, env, request); break;
+      case 'schedules': res = await schedulesHandler(method, p, url, env, request); break;
+      case 'classes': res = await classesHandler(method, p, url, env, request); break;
+      case 'attendance': res = await attendanceHandler(url, env); break;
+      case 'tasks': res = await tasksHandler(method, p, url, env, request); break;
+      case 'dashboard': res = await dashboardHandler(url, env); break;
+      case 'reports':
+        res = p[1] === 'monthly' ? await reportHandler(url, env) : fail('Ruta no encontrada', 404);
+        break;
+      case 'history': res = await historyHandler(url, env); break;
+      case 'modalities':
+        if (method === 'PUT' && !isAdmin(session.user)) res = fail('Solo un administrador puede cambiar las tarifas', 403);
+        else res = await modalitiesHandler(method, p, env, request);
+        break;
+      case 'income': res = await incomeHandler(url, env); break;
+      case 'backup':
+        if (!isAdmin(session.user)) res = fail('Solo un administrador puede usar el respaldo', 403);
+        else res = await backupHandler(method, env, request);
+        break;
+      default: res = fail('Ruta no encontrada', 404);
+      }
+    }
+    // Las rutas auth emiten sus propias cookies; no las sobrescribimos con una renovación.
+    const renewal = (session && p[0] !== 'auth') ? await maybeRenew(env.DB, session, request) : null;
+    if (renewal) res.headers.append('Set-Cookie', renewal);
+    return res;
   } catch (e) {
     if (/unique constraint/i.test(String(e))) return fail('Este registro ya existe',409);
     if (/constraint/i.test(String(e))) return fail('Revisa los valores y las referencias del registro');

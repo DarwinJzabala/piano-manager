@@ -2,7 +2,8 @@ import { get, post, put, del } from '../api.js';
 import { students, levels, program, invalidate } from '../store.js';
 import {
   esc, fmtDate, todayLocal, localISO, addDaysLocal, mondayOf, daysInMonth,
-  weekdayLocal, v, checkedIds, showModal, closeModal, toast, confirmDelete, selectOptions
+  weekdayLocal, v, checkedIds, showModal, closeModal, toast, confirmDelete, selectOptions,
+  MODALITIES, modalityLabel
 } from '../utils.js';
 import { openClassModal } from './classes.js';
 
@@ -30,9 +31,8 @@ async function scheduleForm(sched, studentList, levelList, topicList, defaultDat
       ${studentList.map(s => `<label><input type="checkbox" name="student_ids" value="${s.id}" ${ids.includes(Number(s.id)) ? 'checked' : ''}> ${esc(s.full_name)}</label>`).join('') || '<span class="muted">Registra estudiantes primero.</span>'}
     </div></div>
     <div class="row">
-      <div class="field"><label>Tipo de clase</label><select name="class_type">
-        <option value="particular"${sched?.class_type !== 'grupal' ? ' selected' : ''}>Particular</option>
-        <option value="grupal"${sched?.class_type === 'grupal' ? ' selected' : ''}>Grupal</option>
+      <div class="field"><label>Modalidad</label><select name="class_type">
+        ${MODALITIES.map(m => `<option value="${m.code}"${(sched?.class_type || 'particular') === m.code ? ' selected' : ''}>${m.name}</option>`).join('')}
       </select></div>
       <div class="field"><label>Hora *</label><input name="time" type="time" required value="${esc(sched?.time || '')}"></div>
     </div>
@@ -97,7 +97,7 @@ function dayPanel(date, schedules, tasks, studentList) {
       </div></div>
     <h3>Clases programadas</h3>
     <div class="list">${mine.length ? mine.map(s => `<div class="list-item">
-      <div><div class="title">${esc(s.time)} · ${esc(s.class_type)} ${s.completed ? `<span class="badge">${esc(s.recorded_status)}</span>` : ''}</div>
+      <div><div class="title">${esc(s.time)} · ${esc(modalityLabel(s.class_type))} ${s.completed ? `<span class="badge">${esc(s.recorded_status)}</span>` : ''}</div>
         ${(s.tasks || []).map(t => `<div class="meta">${esc(t.student_name)}: ${esc(t.description)}</div>`).join('')}
         <div class="meta">${(s.students || []).map(x => esc(x.full_name)).join(', ') || '—'}</div>
         <div class="meta">Tema: ${esc(s.topic_name || 'Sin asignar')} · ${esc(s.level_name || 'Sin nivel')}</div>

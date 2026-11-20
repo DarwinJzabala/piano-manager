@@ -44,6 +44,10 @@ try {
   await field('class_date').fill('2026-11-02'); await field('class_time').fill('10:00');
   await dialog.locator(`[data-student="${a.id}"]`).check();
   await field('task_description').fill('Preparar lectura'); await save();
+  let income = await api('income?today=2026-11-02');
+  assert.equal(income.summary.total,600,'La clase particular debe generar RD$600');
+  assert.equal(income.rows.length,1);
+  assert.equal(income.rows[0].amount,600);
   await nav('planificacion');
   await page.locator('#day-new').click();
   await field('student_ids').nth(0).check(); await field('student_ids').nth(1).check();
@@ -58,18 +62,102 @@ try {
   await dialog.locator('#prior-tasks').getByText(/Preparar lectura/).waitFor();
   await field(`att_${b.id}`).selectOption('ausente'); await save();
   assert.equal((await api(`attendance?student_id=${b.id}`))[0].attendance,'ausente');
+  income = await api('income?today=2026-11-04');
+  assert.equal(income.summary.total,1400,'600 + 800 = 1400');
+  assert.equal(income.summary.day,800,'El ingreso del día debe ser solo la clase grupal');
+  assert.equal(income.summary.week,1400);
+  assert.equal(income.summary.month,1400);
+  assert.equal(income.summary.classes,2);
+  assert.equal(income.summary.average,700);
+  assert.deepEqual(income.summary.by_modality.map(m => [m.code,m.amount,m.classes]),
+    [['particular',600,1],['grupal',800,1],['domicilio',0,0],['online',0,0]]);
   await nav('tareas'); await page.locator('[data-review]').click();
   await field('status').selectOption('revisada'); await save();
   const [task] = await api('tasks');
   assert.equal(task.status,'revisada'); assert.equal(task.description,'Preparar lectura');
   await nav('reportes'); await page.locator('#f-year').fill('2026'); await page.locator('#f-month').selectOption('11');
-  assert.deepEqual((await api('reports/monthly?year=2026&month=11')).summary,{particular:1,grupal:1,total:2,attendances:3});
+  assert.deepEqual((await api('reports/monthly?year=2026&month=11')).summary,
+    {particular:1,grupal:1,domicilio:0,online:0,total:2,attendances:3});
   const download = page.waitForEvent('download'); await page.locator('#exp-csv').click();
   assert.match((await download).suggestedFilename(),/\.csv$/);
+
+  // Reglas del módulo de ingresos.
+  const classPayload = (date, type, status, student = a.id) => ({
+    class_type: type, class_date: date, class_time: '15:00', student_ids: [student], status
+  });
+  const totalOn = async date => (await api(`income?from=${date}&to=${date}`)).summary.filtered_total;
+  const requestClass = (method, data, id = '') => page.request[method](`${base}/api/classes${id ? '/' + id : ''}`,{data});
+  const postClass = async data => {
+    const r = await requestClass('post',data);
+    if (!r.ok()) throw new Error(`${r.status()} ${await r.text()}`);
+    return (await r.json()).id;
+  };
+  const putClass = async (id,data) => {
+    const r = await requestClass('put',data,id);
+    if (!r.ok()) throw new Error(`${r.status()} ${await r.text()}`);
+  };
+  const delClass = async id => {
+    const r = await page.request.delete(`${base}/api/classes/${id}`);
+    assert(r.ok(),`No se pudo eliminar la clase ${id}`);
+  };
+
+  const cancelledId = await postClass(classPayload('2026-11-05','particular','cancelada'));
+  assert.equal(await totalOn('2026-11-05'),0,'Una clase cancelada no genera ingresos');
+  await putClass(cancelledId,classPayload('2026-11-05','particular','impartida'));
+  assert.equal(await totalOn('2026-11-05'),600,'Al marcarla impartida se contabiliza');
+  await putClass(cancelledId,classPayload('2026-11-05','particular','cancelada'));
+  assert.equal(await totalOn('2026-11-05'),0,'Al cancelarla se descuenta');
+  await delClass(cancelledId);
+  assert.equal(await totalOn('2026-11-05'),0);
+
+  const duplicateId = await postClass(classPayload('2026-11-06','particular','impartida'));
+  assert.equal(await totalOn('2026-11-06'),600);
+  await putClass(duplicateId,classPayload('2026-11-06','particular','impartida'));
+  const duplicateRows = (await api('income?from=2026-11-06&to=2026-11-06')).rows;
+  assert.equal(duplicateRows.length,1,'Una clase impartida se contabiliza una sola vez');
+  await delClass(duplicateId);
+  assert.equal((await api('income?from=2026-11-06&to=2026-11-06')).rows.length,0,'Al eliminar la clase no queda ingreso huérfano');
+
+  const noRateRes = await requestClass('post',classPayload('2026-11-07','domicilio','impartida'));
+  const noRate = await noRateRes.json();
+  assert(noRateRes.ok());
+  assert.match(noRate.warnings.join(' '),/sin tarifa|tarifa configurada/i,'Debe avisar si la modalidad no tiene tarifa');
+  assert.equal(await totalOn('2026-11-07'),0,'Sin tarifa no se registra un importe');
+  await delClass(noRate.id);
+
+  await nav('tarifas');
+  await page.getByRole('heading',{name:'Configuración de tarifas'}).waitFor();
+  const rateSaved = page.waitForResponse(r => r.url().includes('/api/modalities/particular') && r.request().method() === 'PUT');
+  await page.locator('#rate-particular').fill('700');
+  await page.locator('#save-particular').click();
+  await rateSaved;
+  assert.equal((await api('modalities')).find(m => m.code === 'particular').price,700);
+  const [firstClass] = await api('classes?from=2026-11-02&to=2026-11-02');
+  await putClass(firstClass.id,classPayload('2026-11-02','particular','impartida'));
+  assert.equal((await api('income?from=2026-11-02&to=2026-11-02')).rows[0].amount,600,
+    'Cambiar la tarifa no debe alterar un ingreso histórico');
+  const premiumId = await postClass(classPayload('2026-11-08','particular','impartida'));
+  assert.equal((await api('income?from=2026-11-08&to=2026-11-08')).rows[0].amount,700,
+    'La tarifa nueva sí aplica a clases nuevas');
+  await delClass(premiumId);
+  const restore = await page.request.put(`${base}/api/modalities/particular`,
+    {data:{name:'Particular',price:600,active:1}});
+  assert(restore.ok());
+
+  await nav('ingresos'); await page.getByRole('heading',{name:'Ingresos',exact:true}).waitFor();
+  await nav('ingresos-historial'); await page.getByRole('heading',{name:'Historial de ingresos'}).waitFor();
+  const filteredResp = page.waitForResponse(r => r.url().includes('/api/income?') && r.url().includes('modality=grupal'));
+  await page.locator('#f-modality').selectOption('grupal');
+  await filteredResp;
+  assert.equal((await api('income?modality=grupal')).summary.filtered_total,800);
+  await nav('ingresos-reportes'); await page.getByRole('heading',{name:'Reportes de ingresos'}).waitFor();
+  const incomeDownload = page.waitForEvent('download'); await page.locator('#exp-csv').click();
+  assert.match((await incomeDownload).suggestedFilename(),/^ingresos_/);
+
   await nav('historial'); await page.locator('[data-tab="asistencia"]').click();
   await page.locator('tbody').getByText('ausente').waitFor();
   await nav('respaldo'); await page.locator('#backup-status').getByText('class_students').waitFor();
-  assert.equal(Object.keys((await api('backup')).data).length,8);
+  assert.equal(Object.keys((await api('backup')).data).length,10);
   const importFile = {name:'students.json',mimeType:'application/json',buffer:Buffer.from(JSON.stringify([a,b]))};
   await page.locator('#import-file').setInputFiles(importFile);
   await page.getByText('2 estudiantes listos para importar').waitFor();
@@ -87,5 +175,5 @@ try {
   page.once('dialog', d=>d.accept()); await page.locator('[data-del]').click();
   await page.locator('[data-del]').waitFor({state:'hidden'}); assert.equal((await api('tasks')).length,0);
   assert.deepEqual(errors,[]);
-  console.log('OK: diez módulos, CRUD, listas, revisión, reporte y persistencia en otro contexto.');
+  console.log('OK: módulos académicos e ingresos, CRUD, acumulación automática, tarifas históricas, reportes y persistencia.');
 } finally { await browser.close(); }

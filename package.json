@@ -9,6 +9,7 @@
     "dev": "wrangler pages dev ./public --ip 127.0.0.1 --binding LOCAL_DEV=1",
     "deploy": "wrangler pages deploy ./public",
     "db:init": "wrangler d1 execute piano-manager-db --local --file=./schema.sql",
+    "db:migrate": "wrangler d1 execute piano-manager-db --local --file=./migrations/001_income.sql",
     "db:init:remote": "wrangler d1 execute piano-manager-db --remote --file=./schema.sql"
   },
   "devDependencies": {

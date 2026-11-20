@@ -36,6 +36,19 @@ function placeholders(list) {
   return list.length ? `(${list.map(() => '?').join(',')})` : '(0)';
 }
 
+const MODALITIES = ['particular', 'grupal', 'domicilio', 'online'];
+const MODALITY_NAMES = {
+  particular: 'Particular', grupal: 'Grupal',
+  domicilio: 'A domicilio', online: 'Online'
+};
+function modalityLabel(code) { return MODALITY_NAMES[code] || String(code || ''); }
+function weekBounds(dateStr) {
+  const w = new Date(`${dateStr}T00:00:00Z`).getUTCDay();
+  const start = addDays(dateStr, -(w === 0 ? 6 : w - 1));
+  return [start, addDays(start, 6)];
+}
+function yearBounds(year) { return [`${year}-01-01`, `${year}-12-31`]; }
+
 async function all(db, sql, binds = []) {
   const st = db.prepare(sql);
   return (await (binds.length ? st.bind(...binds) : st).all()).results;
@@ -50,6 +63,32 @@ async function run(db, sql, binds = []) {
 }
 async function insert(db, sql, binds = []) {
   return (await run(db, sql, binds)).meta.last_row_id;
+}
+
+async function incomeSummary(db, today) {
+  const rows = await all(db, 'SELECT * FROM income_entries');
+  const [wFrom, wTo] = weekBounds(today);
+  const [mFrom, mTo] = monthBounds(Number(today.slice(0, 4)), Number(today.slice(5, 7)));
+  const [yFrom, yTo] = yearBounds(Number(today.slice(0, 4)));
+  const inRange = (r, from, to) => r.class_date >= from && r.class_date <= to;
+  const sum = list => list.reduce((n, r) => n + Number(r.amount || 0), 0);
+  const total = sum(rows);
+  return {
+    total,
+    day: sum(rows.filter(r => r.class_date === today)),
+    week: sum(rows.filter(r => inRange(r, wFrom, wTo))),
+    month: sum(rows.filter(r => inRange(r, mFrom, mTo))),
+    year: sum(rows.filter(r => inRange(r, yFrom, yTo))),
+    classes: rows.length,
+    average: rows.length ? total / rows.length : 0,
+    by_modality: MODALITIES.map(code => {
+      const mine = rows.filter(r => r.modality_code === code);
+      return {
+        code, name: modalityLabel(code),
+        amount: sum(mine), classes: mine.length
+      };
+    })
+  };
 }
 
 const CLASS_SELECT = `
@@ -319,7 +358,7 @@ async function schedulesHandler(method, p, url, env, request) {
 function validateClass(b) {
   if (!String(b.class_date || '').match(/^\d{4}-\d{2}-\d{2}$/)) return 'La fecha no es válida';
   if (!String(b.class_time || '').trim()) return 'La hora es obligatoria';
-  if (!['particular', 'grupal'].includes(b.class_type)) return 'El tipo de clase no es válido';
+  if (!MODALITIES.includes(b.class_type)) return 'El tipo de clase no es válido';
   if (!['impartida', 'cancelada', 'reprogramada'].includes(b.status || 'impartida')) return 'El estado no es válido';
   const ids = Array.isArray(b.student_ids) ? b.student_ids.map(Number).filter(Boolean) : [];
   if (!ids.length) return 'Selecciona al menos un estudiante';
@@ -331,8 +370,28 @@ async function writeClass(db, id, b) {
   const err = validateClass(b);
   if (err) return fail(err);
   if (id && !await first(db,'SELECT id FROM classes WHERE id=?',[id])) return fail('Clase no encontrada',404);
+
+  const ids = b.student_ids.map(Number);
+  const status = b.status || 'impartida';
+  const prior = id ? await first(db,'SELECT * FROM income_entries WHERE class_id=?',[id]) : null;
+  const modality = await first(db,'SELECT code,name,price FROM modalities WHERE code=?',[b.class_type]);
+  const rawPrice = modality?.price;
+  const price = rawPrice === null || rawPrice === undefined || rawPrice === '' ? null : Number(rawPrice);
+  // Si la clase ya tenía ingreso y no cambió de modalidad, se conserva la tarifa histórica.
+  const rate = prior && prior.modality_code === b.class_type && prior.rate !== null
+    ? Number(prior.rate)
+    : (price !== null && Number.isFinite(price) ? price : null);
+  const recordIncome = status === 'impartida' && rate !== null;
+  const warnings = [];
+  if (status === 'impartida' && rate === null)
+    warnings.push(`La modalidad "${modalityLabel(b.class_type)}" no tiene tarifa configurada. No se registró ningún ingreso.`);
+
+  const people = new Map((await all(db,
+    `SELECT id,full_name FROM students WHERE id IN ${placeholders(ids)}`, ids)).map(s => [Number(s.id), s.full_name]));
+  const names = ids.map(sid => people.get(sid)).filter(Boolean).join(' | ');
+
   const args = [b.class_date,b.class_time,b.class_type,b.level_id || null,b.topic_id || null,
-    b.schedule_id || null,Number(b.duration_min) || 60,b.content || null,b.notes || null,b.status || 'impartida'];
+    b.schedule_id || null,Number(b.duration_min) || 60,b.content || null,b.notes || null,status];
   const batch = [];
   const add = (sql,...params) => batch.push(db.prepare(sql).bind(...params));
   if (id) {
@@ -344,13 +403,28 @@ async function writeClass(db, id, b) {
   }
   // Inside this atomic batch no other writer can insert a class.
   const ref = 'COALESCE(?,(SELECT MAX(id) FROM classes))';
-  for (const sid of b.student_ids.map(Number)) {
+  for (const sid of ids) {
     add(`INSERT INTO class_students(class_id,student_id,attendance) VALUES(${ref},?,?)`,id,sid,b.attendance?.[sid] || 'presente');
+  }
+  if (recordIncome) {
+    add(`INSERT INTO income_entries
+      (class_id,class_date,class_time,modality_code,modality_name,student_names,student_ids_csv,rate,amount,status,created_at,updated_at)
+      VALUES(${ref},?,?,?,?,?,?,?,?,'impartida',CURRENT_TIMESTAMP,CURRENT_TIMESTAMP)
+      ON CONFLICT(class_id) DO UPDATE SET
+        class_date=excluded.class_date, class_time=excluded.class_time,
+        modality_code=excluded.modality_code, modality_name=excluded.modality_name,
+        student_names=excluded.student_names, student_ids_csv=excluded.student_ids_csv,
+        rate=excluded.rate, amount=excluded.amount, status=excluded.status,
+        updated_at=CURRENT_TIMESTAMP`,
+      id, b.class_date, b.class_time, b.class_type, modalityLabel(b.class_type),
+      names, ids.join(','), rate, rate);
+  } else if (id) {
+    add('DELETE FROM income_entries WHERE class_id=?',id);
   }
   const desc = String(b.task?.description || '').trim();
   if (desc) {
     const sid = Number(b.task.student_id || b.student_ids[0]);
-    if (!b.student_ids.map(Number).includes(sid)) return fail('La tarea debe corresponder a un participante');
+    if (!ids.includes(sid)) return fail('La tarea debe corresponder a un participante');
     const values = [sid,b.class_date,desc,b.task.due_date || addDays(b.class_date,7)];
     if (id && b.task_id) add('UPDATE tasks SET student_id=?,assigned_date=?,description=?,due_date=? WHERE id=? AND class_id=?',...values,b.task_id,id);
     else add(`INSERT INTO tasks(class_id,student_id,assigned_date,description,due_date) VALUES(${ref},?,?,?,?)`,id,...values);
@@ -360,7 +434,7 @@ async function writeClass(db, id, b) {
     add(`INSERT INTO schedule_completions(schedule_id,class_date,class_id) VALUES(?,?,${ref})`,b.schedule_id,b.class_date,id);
   }
   const result = await db.batch(batch);
-  return json({ok:true,id:id || result[0].meta.last_row_id},id ? 200 : 201);
+  return json({ok:true,id:id || result[0].meta.last_row_id,warnings},id ? 200 : 201);
 }
 
 async function classesHandler(method, p, url, env, request) {
@@ -381,7 +455,11 @@ async function classesHandler(method, p, url, env, request) {
   if (method === 'POST' || (method === 'PUT' && p[1]))
     return writeClass(db,method === 'PUT' ? p[1] : null,await body(request));
   if (method === 'DELETE' && p[1]) {
-    await run(db, 'DELETE FROM classes WHERE id=?', [p[1]]);
+    const batch = [
+      db.prepare('DELETE FROM income_entries WHERE class_id=?').bind(p[1]),
+      db.prepare('DELETE FROM classes WHERE id=?').bind(p[1])
+    ];
+    await db.batch(batch);
     return json({ ok: true });
   }
   return fail('Método no permitido', 405);
@@ -457,8 +535,8 @@ async function dashboardHandler(url, env) {
 
   const monthRows = await all(db, `SELECT class_type, COUNT(*) AS n FROM classes
     WHERE status='impartida' AND class_date BETWEEN ? AND ? GROUP BY class_type`, [mStart, mEnd]);
-  const counts = { particular: 0, grupal: 0 };
-  monthRows.forEach(r => { counts[r.class_type] = r.n; });
+  const counts = Object.fromEntries(MODALITIES.map(code => [code, 0]));
+  monthRows.forEach(r => { if (r.class_type in counts) counts[r.class_type] = r.n; });
 
   const todaySchedules = await scheduleOccurrences(db, today, today);
   const upcoming = await scheduleOccurrences(db, addDays(today, 1), addDays(today, 8));
@@ -474,10 +552,13 @@ async function dashboardHandler(url, env) {
 
   return json({
     today, year, month,
+    income: await incomeSummary(db, today),
     stats: {
       month_total: monthTotal ? monthTotal.n : 0,
       particular: counts.particular || 0,
       grupal: counts.grupal || 0,
+      domicilio: counts.domicilio || 0,
+      online: counts.online || 0,
       upcoming: upcoming.length,
       pending_tasks: (await first(db, "SELECT COUNT(*) AS n FROM tasks WHERE status='pendiente'")).n
     },
@@ -502,11 +583,10 @@ async function reportHandler(url, env) {
   sql += ' ORDER BY c.class_date, c.class_time';
   const rows = await all(db, sql, binds);
   const summary = {
-    particular: rows.filter(r => r.class_type === 'particular').length,
-    grupal: rows.filter(r => r.class_type === 'grupal').length,
     total: rows.length,
     attendances: rows.reduce((n, r) => n + (r.student_ids_csv ? r.student_ids_csv.split(',').length : 0), 0)
   };
+  MODALITIES.forEach(code => { summary[code] = rows.filter(r => r.class_type === code).length; });
   return json({ year, month, from: start, to: end, summary, rows });
 }
 
@@ -545,7 +625,7 @@ async function backupHandler(method, env, request) {
   const db = env.DB;
   if (method === 'GET') {
     const tables = ['levels', 'students', 'program_items', 'schedules', 'classes',
-      'class_students', 'schedule_completions', 'tasks'];
+      'class_students', 'schedule_completions', 'tasks', 'modalities', 'income_entries'];
     const snapshot = await db.batch(tables.map(t => db.prepare(`SELECT * FROM ${t}`)));
     const entries = tables.map((t,i) => [t,snapshot[i].results]);
     return json({ version: 1, exported_at: new Date().toISOString(), data: Object.fromEntries(entries) });
@@ -569,6 +649,63 @@ async function backupHandler(method, env, request) {
     return json({ ok: true, processed: results.reduce((n,r) => n+r.meta.changes,0) });
   }
   return fail('Método no permitido', 405);
+}
+
+/* ------------------------------- Modalidades ------------------------------- */
+async function modalitiesHandler(method, p, env, request) {
+  const db = env.DB;
+  if (method === 'GET')
+    return json(await all(db, 'SELECT * FROM modalities ORDER BY sort_order, code'));
+  if (method === 'PUT' && p[1]) {
+    if (!MODALITIES.includes(p[1])) return fail('Modalidad no válida', 404);
+    const b = await body(request);
+    const hasPrice = Object.prototype.hasOwnProperty.call(b, 'price');
+    const price = hasPrice && b.price !== null && b.price !== '' ? Number(b.price) : null;
+    if (hasPrice && price !== null && (!Number.isFinite(price) || price < 0))
+      return fail('La tarifa debe ser un número mayor o igual a cero');
+    const active = [false, 0].includes(b.active) ? 0 : 1;
+    const name = String(b.name || '').trim() || modalityLabel(p[1]);
+    await run(db, `UPDATE modalities SET name=?, price=?, active=?, updated_at=CURRENT_TIMESTAMP WHERE code=?`,
+      [name, price, active, p[1]]);
+    return json({ ok: true });
+  }
+  return fail('Método no permitido', 405);
+}
+
+/* -------------------------------- Ingresos -------------------------------- */
+async function incomeHandler(url, env) {
+  const db = env.DB;
+  const q = url.searchParams;
+  const today = q.get('today') || new Date().toISOString().slice(0, 10);
+  const period = q.get('period') || 'all';
+  const year = Number(q.get('year')) || Number(today.slice(0, 4));
+  const month = Number(q.get('month')) || Number(today.slice(5, 7));
+  let from = q.get('from') || '';
+  let to = q.get('to') || '';
+  if (!from && !to) {
+    if (period === 'day') { from = to = q.get('date') || today; }
+    else if (period === 'week') { [from, to] = weekBounds(today); }
+    else if (period === 'month') { [from, to] = monthBounds(year, month); }
+    else if (period === 'year') { [from, to] = yearBounds(year); }
+  }
+  let sql = 'SELECT * FROM income_entries WHERE 1=1';
+  const binds = [];
+  if (from) { sql += ' AND class_date>=?'; binds.push(from); }
+  if (to) { sql += ' AND class_date<=?'; binds.push(to); }
+  if (q.get('modality')) { sql += ' AND modality_code=?'; binds.push(q.get('modality')); }
+  if (q.get('student_id')) {
+    sql += " AND (',' || student_ids_csv || ',') LIKE ?";
+    binds.push(`%,${q.get('student_id')},%`);
+  }
+  sql += ' ORDER BY class_date DESC, class_time DESC';
+  const rows = await all(db, sql, binds);
+  const total = rows.reduce((n, r) => n + Number(r.amount || 0), 0);
+  return json({
+    today, period, from, to, year, month,
+    summary: { ...await incomeSummary(db, today), filtered_total: total, filtered_classes: rows.length },
+    rows,
+    modalities: await all(db, 'SELECT * FROM modalities ORDER BY sort_order, code')
+  });
 }
 
 /* --------------------------------- Router --------------------------------- */
@@ -602,6 +739,8 @@ export async function onRequest(context) {
         if (p[1] === 'monthly') return await reportHandler(url, env);
         return fail('Ruta no encontrada', 404);
       case 'history': return await historyHandler(url, env);
+      case 'modalities': return await modalitiesHandler(method, p, env, request);
+      case 'income': return await incomeHandler(url, env);
       case 'backup': return await backupHandler(method, env, request);
       default: return fail('Ruta no encontrada', 404);
     }

@@ -2,7 +2,7 @@ import { get, post, put, del } from '../api.js';
 import { students, levels, program, invalidate } from '../store.js';
 import {
   esc, fmtDate, localISO, addDaysLocal, v, checkedIds, showModal, closeModal,
-  toast, confirmDelete, selectOptions
+  toast, confirmDelete, selectOptions, MODALITIES, modalityLabel
 } from '../utils.js';
 
 const ATT = [['presente', 'Presente'], ['ausente', 'Ausente'], ['justificada', 'Ausencia justificada']];
@@ -21,9 +21,8 @@ export async function openClassModal(prefill = {}, onDone) {
       <div class="field"><label>Duración (min)</label><input name="duration_min" type="number" min="15" value="${esc(prefill.duration_min || 60)}"></div>
     </div>
     <div class="row">
-      <div class="field"><label>Tipo de clase *</label><select name="class_type">
-        <option value="particular"${prefill.class_type !== 'grupal' ? ' selected' : ''}>Particular (cuenta como 1 clase)</option>
-        <option value="grupal"${prefill.class_type === 'grupal' ? ' selected' : ''}>Grupal (cuenta como 1 clase)</option>
+      <div class="field"><label>Modalidad *</label><select name="class_type">
+        ${MODALITIES.map(m => `<option value="${m.code}"${(prefill.class_type || 'particular') === m.code ? ' selected' : ''}>${m.name} (cuenta como 1 clase)</option>`).join('')}
       </select></div>
       <div class="field"><label>Estado *</label><select name="status">${STATUS.map(([val, label]) => `<option value="${val}"${(prefill.status || 'impartida') === val ? ' selected' : ''}>${label}</option>`).join('')}</select></div>
     </div>
@@ -80,11 +79,11 @@ export async function openClassModal(prefill = {}, onDone) {
         student_id: Number(v(fd, 'task_student')) || ids[0]
       }
     };
-    if (edit) await put(`classes/${prefill.id}`, payload);
-    else await post('classes', payload);
+    const saved = edit ? await put(`classes/${prefill.id}`, payload) : await post('classes', payload);
     invalidate('students', 'program');
     closeModal();
     toast(edit ? 'Clase actualizada' : 'Clase guardada correctamente');
+    (saved.warnings || []).forEach(w => toast(w, 'error'));
     if (onDone) await onDone();
     else document.querySelector('#main').dispatchEvent(new Event('refresh'));
   }, { submitText: edit ? 'Guardar cambios' : 'Guardar clase' });
@@ -120,7 +119,7 @@ export async function openClassModal(prefill = {}, onDone) {
 
 function detailModal(c) {
   const body = `
-    <p class="muted">${fmtDate(c.class_date)} · ${esc(c.class_time)} · ${esc(c.class_type)} · ${esc(c.status)}</p>
+    <p class="muted">${fmtDate(c.class_date)} · ${esc(c.class_time)} · ${esc(modalityLabel(c.class_type))} · ${esc(c.status)}</p>
     <p><b>Estudiantes:</b> ${esc(c.student_names || '—')}</p>
     <p><b>Asistencia:</b> ${esc(c.attendance_summary || '—')}</p>
     <p><b>Nivel / tema:</b> ${esc(c.level_name || '—')} / ${esc(c.topic_name || '—')}</p>
@@ -150,7 +149,7 @@ export async function render(main) {
     <div class="filters">
       <div class="field"><label>Desde</label><input id="f-from" type="date" value="${q.from}"></div>
       <div class="field"><label>Hasta</label><input id="f-to" type="date" value="${q.to}"></div>
-      <div class="field"><label>Tipo</label><select id="f-type"><option value="">Todos</option><option value="particular"${q.type === 'particular' ? ' selected' : ''}>Particular</option><option value="grupal"${q.type === 'grupal' ? ' selected' : ''}>Grupal</option></select></div>
+      <div class="field"><label>Modalidad</label><select id="f-type"><option value="">Todas</option>${MODALITIES.map(m => `<option value="${m.code}"${q.type === m.code ? ' selected' : ''}>${m.name}</option>`).join('')}</select></div>
       <div class="field"><label>Estado</label><select id="f-status"><option value="">Todos</option>${STATUS.map(([val, label]) => `<option value="${val}"${q.status === val ? ' selected' : ''}>${label}</option>`).join('')}</select></div>
       <div class="field"><label>Estudiante</label><select id="f-student"><option value="">Todos</option>${selectOptions(studentList.map(s => ({ id: s.id, name: s.full_name })), q.student_id)}</select></div>
     </div>
@@ -158,7 +157,7 @@ export async function render(main) {
       <thead><tr><th>Fecha</th><th>Hora</th><th>Tipo</th><th>Estudiantes</th><th>Tema</th><th>Estado</th><th></th></tr></thead>
       <tbody>${filtered.length ? filtered.map(c => `<tr>
         <td>${fmtDate(c.class_date)}</td><td>${esc(c.class_time)}</td>
-        <td><span class="badge ${esc(c.class_type)}">${c.class_type === 'grupal' ? 'Grupal' : 'Particular'}</span></td>
+        <td><span class="badge ${esc(c.class_type)}">${esc(modalityLabel(c.class_type))}</span></td>
         <td>${esc(c.student_names || '—')}</td><td>${esc(c.topic_name || '—')}</td>
         <td><span class="badge ${esc(c.status)}">${esc(c.status)}</span></td>
         <td><div class="table-actions">

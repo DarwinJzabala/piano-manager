@@ -10,10 +10,16 @@ import * as tasks from './views/tasks.js';
 import * as reports from './views/reports.js';
 import * as history from './views/history.js';
 import * as backup from './views/backup.js';
+import * as income from './views/income.js';
+import * as incomeHistory from './views/income-history.js';
+import * as incomeReports from './views/income-reports.js';
+import * as rates from './views/rates.js';
 
 const routes = {
   dashboard, estudiantes: students, programa: program, planificacion: planning,
-  clases: classes, tareas: tasks, reportes: reports, historial: history, respaldo: backup
+  clases: classes, tareas: tasks, reportes: reports, historial: history, respaldo: backup,
+  ingresos: income, 'ingresos-historial': incomeHistory,
+  'ingresos-reportes': incomeReports, tarifas: rates
 };
 
 let main = qs('#main');

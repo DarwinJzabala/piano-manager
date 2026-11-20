@@ -33,6 +33,20 @@ export function fmtMonth(year, month) {
     'Julio', 'Agosto', 'Septiembre', 'Octubre', 'Noviembre', 'Diciembre'];
   return `${names[Number(month) - 1] || ''} ${year}`;
 }
+export const MODALITIES = [
+  { code: 'particular', name: 'Particular' },
+  { code: 'grupal', name: 'Grupal' },
+  { code: 'domicilio', name: 'A domicilio' },
+  { code: 'online', name: 'Online' }
+];
+export function modalityLabel(code) {
+  return MODALITIES.find(m => m.code === code)?.name || String(code || '');
+}
+export function money(value) {
+  return new Intl.NumberFormat('es-DO', {
+    style: 'currency', currency: 'DOP', minimumFractionDigits: 2
+  }).format(Number(value || 0));
+}
 export function daysInMonth(year, month) {
   return new Date(Number(year), Number(month), 0).getDate();
 }

@@ -1,5 +1,5 @@
 import { get } from '../api.js';
-import { esc, fmtDate, fmtMonth, pad, toast, downloadFile } from '../utils.js';
+import { esc, fmtDate, fmtMonth, pad, toast, downloadFile, MODALITIES, modalityLabel } from '../utils.js';
 
 function reportHTML(d) {
   const s = d.summary;
@@ -19,13 +19,13 @@ function reportHTML(d) {
       <table style="width:100%;border-collapse:collapse;font-size:12px">
         <thead><tr style="background:#f6f6f4;text-align:left">
           <th style="padding:8px;border-bottom:1px solid #e4e4e0">Fecha</th><th style="padding:8px;border-bottom:1px solid #e4e4e0">Hora</th>
-          <th style="padding:8px;border-bottom:1px solid #e4e4e0">Tipo</th><th style="padding:8px;border-bottom:1px solid #e4e4e0">Estudiantes</th>
+          <th style="padding:8px;border-bottom:1px solid #e4e4e0">Modalidad</th><th style="padding:8px;border-bottom:1px solid #e4e4e0">Estudiantes</th>
           <th style="padding:8px;border-bottom:1px solid #e4e4e0">Tema</th><th style="padding:8px;border-bottom:1px solid #e4e4e0">Estado</th>
         </tr></thead>
         <tbody>${d.rows.map(r => `<tr>
           <td style="padding:7px;border-bottom:1px solid #eee">${fmtDate(r.class_date)}</td>
           <td style="padding:7px;border-bottom:1px solid #eee">${esc(r.class_time)}</td>
-          <td style="padding:7px;border-bottom:1px solid #eee">${esc(r.class_type)}</td>
+          <td style="padding:7px;border-bottom:1px solid #eee">${esc(modalityLabel(r.class_type))}</td>
           <td style="padding:7px;border-bottom:1px solid #eee">${esc(r.student_names || '—')}</td>
           <td style="padding:7px;border-bottom:1px solid #eee">${esc(r.topic_name || '—')}</td>
           <td style="padding:7px;border-bottom:1px solid #eee">${esc(r.status)}</td>
@@ -36,10 +36,10 @@ function reportHTML(d) {
 }
 
 function csv(rows) {
-  const head = ['Fecha', 'Hora', 'Tipo', 'Estudiantes', 'Tema', 'Contenido', 'Estado'];
+  const head = ['Fecha', 'Hora', 'Modalidad', 'Estudiantes', 'Tema', 'Contenido', 'Estado'];
   const escCsv = x => `"${String(x ?? '').replace(/^(\s*[=+\-@]|\t|\r)/, "'$1").replace(/"/g, '""')}"`;
   const lines = [head.map(escCsv).join(',')];
-  rows.forEach(r => lines.push([r.class_date, r.class_time, r.class_type,
+  rows.forEach(r => lines.push([r.class_date, r.class_time, modalityLabel(r.class_type),
     r.student_names, r.topic_name, r.content, r.status].map(escCsv).join(',')));
   return '\uFEFF' + lines.join('\r\n');
 }
@@ -63,19 +63,21 @@ export async function render(main) {
     <div class="filters no-print">
       <div class="field"><label>Año</label><input id="f-year" type="number" min="2020" max="2100" value="${y}"></div>
       <div class="field"><label>Mes</label><select id="f-month">${Array.from({ length: 12 }, (_, i) => `<option value="${i + 1}"${m === i + 1 ? ' selected' : ''}>${fmtMonth(y, i + 1)}</option>`).join('')}</select></div>
-      <div class="field"><label>Tipo de clase</label><select id="f-type"><option value="">Todas</option><option value="particular"${type === 'particular' ? ' selected' : ''}>Particular</option><option value="grupal"${type === 'grupal' ? ' selected' : ''}>Grupal</option></select></div>
+      <div class="field"><label>Modalidad</label><select id="f-type"><option value="">Todas</option>${MODALITIES.map(m => `<option value="${m.code}"${type === m.code ? ' selected' : ''}>${m.name}</option>`).join('')}</select></div>
     </div>
     <div class="stats">
-      <div class="stat"><div class="label">Particulares</div><div class="value">${d.summary.particular}</div></div>
-      <div class="stat"><div class="label">Grupales</div><div class="value">${d.summary.grupal}</div></div>
+      <div class="stat"><div class="label">Particulares</div><div class="value">${d.summary.particular || 0}</div></div>
+      <div class="stat"><div class="label">Grupales</div><div class="value">${d.summary.grupal || 0}</div></div>
+      <div class="stat"><div class="label">A domicilio</div><div class="value">${d.summary.domicilio || 0}</div></div>
+      <div class="stat"><div class="label">Online</div><div class="value">${d.summary.online || 0}</div></div>
       <div class="stat accent"><div class="label">Total impartidas</div><div class="value">${d.summary.total}</div></div>
       <div class="stat"><div class="label">Asistencias registradas</div><div class="value">${d.summary.attendances}</div></div>
     </div>
     <div class="table-wrap"><table>
-      <thead><tr><th>Fecha</th><th>Hora</th><th>Tipo</th><th>Estudiantes</th><th>Tema</th><th>Estado</th></tr></thead>
+      <thead><tr><th>Fecha</th><th>Hora</th><th>Modalidad</th><th>Estudiantes</th><th>Tema</th><th>Estado</th></tr></thead>
       <tbody>${d.rows.length ? d.rows.map(r => `<tr>
         <td>${fmtDate(r.class_date)}</td><td>${esc(r.class_time)}</td>
-        <td><span class="badge ${esc(r.class_type)}">${esc(r.class_type)}</span></td>
+        <td><span class="badge ${esc(r.class_type)}">${esc(modalityLabel(r.class_type))}</span></td>
         <td>${esc(r.student_names || '—')}</td><td>${esc(r.topic_name || '—')}</td>
         <td><span class="badge ${esc(r.status)}">${esc(r.status)}</span></td>
       </tr>`).join('') : '<tr><td colspan="6" class="empty">No hay clases impartidas en este período.</td></tr>'}</tbody>
@@ -91,7 +93,7 @@ export async function render(main) {
 
   main.querySelector('#exp-xlsx').onclick = () => {
     const rows = current.rows.map(r => ({
-      Fecha: r.class_date, Hora: r.class_time, Tipo: r.class_type,
+      Fecha: r.class_date, Hora: r.class_time, Modalidad: modalityLabel(r.class_type),
       Estudiantes: r.student_names || '', Tema: r.topic_name || '',
       Contenido: r.content || '', Estado: r.status
     }));

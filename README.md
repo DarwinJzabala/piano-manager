@@ -1,6 +1,6 @@
 # Piano Manager
 
-Aplicación para un profesor de piano. `public/` contiene la interfaz; `functions/api/[[path]].js` ejecuta SQL parametrizado en D1. El navegador solo llama a `/api/`. `schema.sql` describe el esquema existente. No hay migración ni datos de ejemplo que cargar para esta versión.
+Aplicación para un profesor de piano. `public/` contiene la interfaz; `functions/api/[[path]].js` ejecuta SQL parametrizado en D1. El navegador solo llama a `/api/`. `schema.sql` describe el esquema actual, incluido el módulo de ingresos. Para una base anterior usa `migrations/001_income.sql` (`npm run db:migrate`). No hay datos de ejemplo que cargar.
 
 ## Publicar la actualización
 
@@ -16,6 +16,14 @@ Aplicación para un profesor de piano. `public/` contiene la interfaz; `function
    ```
 
    La prueba necesita Google Chrome instalado. Usa una base temporal y la elimina al terminar. Si `whoami` no muestra tu cuenta, ejecuta `npx wrangler login`.
+   Si la D1 remota todavía no tiene el módulo de ingresos, haz primero una copia y aplica la migración **una sola vez**:
+
+   ```powershell
+   npx wrangler d1 export piano-manager-db --remote --output=./piano-manager-antes-ingresos.sql
+   npx wrangler d1 execute piano-manager-db --remote --file=./migrations/001_income.sql
+   ```
+
+   La migración copia las filas existentes al ampliar las modalidades; no elimina datos ni reinicia la base. Verifica con `npx wrangler d1 execute piano-manager-db --remote --command "SELECT version FROM schema_migrations"`.
 5. En Pages comprueba la rama de producción del proyecto. **Solo cuando decidas publicar**, sustituye `RAMA_DE_PRODUCCION` por ese nombre:
 
    ```powershell
@@ -29,7 +37,8 @@ Aplicación para un profesor de piano. `public/` contiene la interfaz; `function
 ## Trabajo local
 
 ```powershell
-npm run db:init
+npm run db:init     # base nueva
+npm run db:migrate  # solo si ya existía una base local anterior
 npm run dev
 ```
 
@@ -43,4 +52,7 @@ Abre la dirección local indicada por Wrangler. Para repetir la auditoría funci
 - Al seleccionar participantes aparecen sus tareas pendientes anteriores, incluso si cambió el día de clase. Desde **Tareas** puedes revisar, completar o asignar más tareas por estudiante.
 - **Reportes** cuenta únicamente clases impartidas. Una grupal cuenta una sola vez; “asistencias registradas” cuenta marcas individuales, incluidas las ausencias. Se puede imprimir/guardar como PDF, descargar CSV y exportar XLSX si está disponible SheetJS.
 - **Historial** consulta clases, listas, tareas y contenido. Las consultas de clases y tareas del historial muestran como máximo 500 registros por filtro.
-- **Respaldo** exporta las ocho tablas académicas en JSON; su importador solo incorpora estudiantes, ignora duplicados y requiere que los niveles referenciados existan. Para una copia SQL recuperable del conjunto de la D1 usa `npx wrangler d1 export piano-manager-db --remote --output=./piano-manager.sql`. Guarda esa copia fuera de `public/`.
+- **Ingresos** calcula automáticamente el importe de cada clase al marcarla como impartida: Particular RD$600 y Grupal RD$800; A domicilio y Online aparecen sin tarifa hasta que las configures en **Tarifas**. Solo se contabiliza cada clase una vez, se descuenta si cambia a cancelada/reprogramada y se elimina si se borra la clase. El importe queda congelado: cambiar una tarifa no altera ingresos anteriores.
+- **Historial de ingresos** muestra fecha, hora, estudiante/grupo, modalidad, estado, tarifa e importe, con filtros por fecha, mes, año, modalidad y estudiante.
+- **Reportes de ingresos** genera totales y desglose por modalidad para día, semana, mes, año, modalidad o período personalizado; exporta PDF, XLSX y CSV.
+- **Respaldo** exporta las diez tablas (las ocho académicas más `modalities` e `income_entries`) en JSON; su importador solo incorpora estudiantes, ignora duplicados y requiere que los niveles referenciados existan. Para una copia SQL recuperable del conjunto de la D1 usa `npx wrangler d1 export piano-manager-db --remote --output=./piano-manager.sql`. Guarda esa copia fuera de `public/`.

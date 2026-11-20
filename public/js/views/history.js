@@ -1,6 +1,6 @@
 import { get } from '../api.js';
 import { students, levels } from '../store.js';
-import { esc, fmtDate, v } from '../utils.js';
+import { esc, fmtDate, v, MODALITIES, modalityLabel } from '../utils.js';
 
 export async function render(main) {
   const q = {
@@ -16,7 +16,7 @@ export async function render(main) {
 
   const classRows = data.classes.map(c => `<tr>
     <td>${fmtDate(c.class_date)}</td><td>${esc(c.class_time)}</td>
-    <td><span class="badge ${esc(c.class_type)}">${esc(c.class_type)}</span></td>
+    <td><span class="badge ${esc(c.class_type)}">${esc(modalityLabel(c.class_type))}</span></td>
     <td>${esc(c.student_names || '—')}</td><td>${esc(c.level_name || '—')}</td>
     <td>${esc(c.topic_name || '—')}</td><td><span class="badge ${esc(c.status)}">${esc(c.status)}</span></td>
   </tr>`).join('');
@@ -25,7 +25,7 @@ export async function render(main) {
   const attRows = att.map(a => `<tr>
     <td>${fmtDate(a.class_date)}</td><td>${esc(a.student_name)}</td>
     <td><span class="badge ${esc(a.attendance)}">${esc(a.attendance)}</span></td>
-    <td>${esc(a.class_type)}</td><td>${esc(a.content || '—')}</td>
+    <td>${esc(modalityLabel(a.class_type))}</td><td>${esc(a.content || '—')}</td>
   </tr>`).join('');
 
   const taskRows = data.tasks.map(t => `<tr>
@@ -53,7 +53,7 @@ export async function render(main) {
       <div class="field"><label>Hasta</label><input id="f-to" type="date" value="${q.to}"></div>
       <div class="field"><label>Estudiante</label><select id="f-student"><option value="">Todos</option>${studentList.map(s => `<option value="${s.id}"${String(q.student_id) === String(s.id) ? ' selected' : ''}>${esc(s.full_name)}</option>`).join('')}</select></div>
       <div class="field"><label>Nivel</label><select id="f-level"><option value="">Todos</option>${levelList.map(l => `<option value="${l.id}"${String(q.level_id) === String(l.id) ? ' selected' : ''}>${esc(l.name)}</option>`).join('')}</select></div>
-      <div class="field"><label>Tipo</label><select id="f-type"><option value="">Todos</option><option value="particular"${q.type === 'particular' ? ' selected' : ''}>Particular</option><option value="grupal"${q.type === 'grupal' ? ' selected' : ''}>Grupal</option></select></div>
+      <div class="field"><label>Modalidad</label><select id="f-type"><option value="">Todas</option>${MODALITIES.map(m => `<option value="${m.code}"${q.type === m.code ? ' selected' : ''}>${m.name}</option>`).join('')}</select></div>
     </div>
     <div class="inline" style="margin-bottom:14px">
       ${[['clases', 'Clases'], ['asistencia', 'Asistencia'], ['tareas', 'Tareas'], ['contenido', 'Contenido por estudiante']].map(([k, label]) => `<button class="btn sm ${tab === k ? 'primary' : ''}" data-tab="${k}">${label}</button>`).join('')}

@@ -1,5 +1,5 @@
 import { get, put } from '../api.js';
-import { esc, fmtDate, todayLocal, toast, localISO } from '../utils.js';
+import { esc, fmtDate, todayLocal, toast, localISO, money, modalityLabel } from '../utils.js';
 import { openClassModal } from './classes.js';
 
 function goPlanning(date) {
@@ -15,7 +15,7 @@ function scheduleRow(s, showDate) {
     : `<button class="btn sm primary" data-open-schedule="${s.id}" data-date="${esc(s.date)}">Registrar</button>`;
   return `<div class="list-item">
     <div>
-      <div class="title">${showDate ? fmtDate(s.date) + ' · ' : ''}${esc(s.time)} <span class="badge ${esc(s.class_type)}">${s.class_type === 'grupal' ? 'Grupal' : 'Particular'}</span></div>
+      <div class="title">${showDate ? fmtDate(s.date) + ' · ' : ''}${esc(s.time)} <span class="badge ${esc(s.class_type)}">${esc(modalityLabel(s.class_type))}</span></div>
       <div class="meta">${names} · ${topic}${s.completed ? ' · ' + esc(s.recorded_status) : ''}</div>
       ${(s.tasks || []).map(t => `<div class="meta">${esc(t.student_name)}: ${esc(t.description)}</div>`).join('')}
     </div>
@@ -38,6 +38,7 @@ export async function render(main) {
       <div class="stat"><div class="label">Grupales</div><div class="value">${s.grupal}</div></div>
       <div class="stat"><div class="label">Próximas clases</div><div class="value">${s.upcoming}</div></div>
       <div class="stat"><div class="label">Tareas pendientes</div><div class="value">${s.pending_tasks}</div></div>
+      <div class="stat accent"><div class="label">Ingresos del mes</div><div class="value">${money(d.income?.month || 0)}</div></div>
     </div>
 
     <div class="section">
@@ -79,7 +80,7 @@ export async function render(main) {
         <thead><tr><th>Fecha</th><th>Hora</th><th>Tipo</th><th>Estudiantes</th><th>Tema</th><th>Estado</th></tr></thead>
         <tbody>${d.recent_classes.length ? d.recent_classes.map(c => `<tr>
           <td>${fmtDate(c.class_date)}</td><td>${esc(c.class_time)}</td>
-          <td><span class="badge ${esc(c.class_type)}">${c.class_type === 'grupal' ? 'Grupal' : 'Particular'}</span></td>
+          <td><span class="badge ${esc(c.class_type)}">${esc(modalityLabel(c.class_type))}</span></td>
           <td>${esc(c.student_names || '—')}</td><td>${esc(c.topic_name || '—')}</td>
           <td><span class="badge ${esc(c.status)}">${esc(c.status)}</span></td>
         </tr>`).join('') : '<tr><td colspan="6" class="empty">Aún no hay clases registradas.</td></tr>'}</tbody>

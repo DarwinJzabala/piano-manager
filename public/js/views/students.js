@@ -1,6 +1,6 @@
 import { get, post, put, del } from '../api.js';
 import { students, levels, invalidate } from '../store.js';
-import { esc, fmtDate, v, checkedIds, showModal, closeModal, toast, confirmDelete, selectOptions } from '../utils.js';
+import { esc, fmtDate, v, checkedIds, showModal, closeModal, toast, confirmDelete, selectOptions, MODALITIES, modalityLabel } from '../utils.js';
 
 const DAYS = [[1, 'Lunes'], [2, 'Martes'], [3, 'Miércoles'], [4, 'Jueves'], [5, 'Viernes'], [6, 'Sábado'], [7, 'Domingo']];
 const dayLabel = n => (DAYS.find(d => d[0] === Number(n)) || [null, '—'])[1];
@@ -14,9 +14,8 @@ async function openForm(st, levelList) {
     </div>
     <div class="row">
       <div class="field"><label>Nivel</label><select name="level_id">${selectOptions(levelList.map(l => ({ id: l.id, name: l.name })), st?.level_id, 'id', 'name')}</select></div>
-      <div class="field"><label>Tipo de clase habitual</label><select name="class_type">
-        <option value="particular"${st?.class_type === 'particular' ? ' selected' : ''}>Particular</option>
-        <option value="grupal"${st?.class_type === 'grupal' ? ' selected' : ''}>Grupal</option>
+      <div class="field"><label>Modalidad habitual</label><select name="class_type">
+        ${MODALITIES.map(m => `<option value="${m.code}"${(st?.class_type || 'particular') === m.code ? ' selected' : ''}>${m.name}</option>`).join('')}
       </select></div>
     </div>
     <div class="row">
@@ -54,7 +53,7 @@ async function openDetail(id) {
   if (!st) return;
   const level = allLevels.find(l => String(l.id) === String(st.level_id));
   const body = `
-    <p class="muted">${esc(st.phone || 'Sin teléfono')} · ${esc(level?.name || 'Sin nivel')} · ${esc(st.class_type)}</p>
+    <p class="muted">${esc(st.phone || 'Sin teléfono')} · ${esc(level?.name || 'Sin nivel')} · ${esc(modalityLabel(st.class_type))}</p>
     <h3>Clases registradas (${history.classes.length})</h3>
     <div class="table-wrap" style="max-height:200px;overflow:auto"><table><thead><tr><th>Fecha</th><th>Tema</th><th>Contenido</th></tr></thead><tbody>
       ${history.classes.length ? history.classes.map(c => `<tr><td>${fmtDate(c.class_date)}</td><td>${esc(c.topic_name || '—')}</td><td>${esc(c.content || '—')}</td></tr>`).join('') : '<tr><td colspan="3" class="empty">Sin clases</td></tr>'}
@@ -81,7 +80,7 @@ export async function render(main) {
         <tbody>${rows.length ? rows.map(s => `<tr>
           <td><b>${esc(s.full_name)}</b><div class="small muted">${esc(s.phone || '')}</div></td>
           <td>${esc(s.level_name || '—')}</td>
-          <td><span class="badge ${esc(s.class_type)}">${s.class_type === 'grupal' ? 'Grupal' : 'Particular'}</span></td>
+          <td><span class="badge ${esc(s.class_type)}">${esc(modalityLabel(s.class_type))}</span></td>
           <td>${dayLabel(s.usual_day)}${s.usual_time ? ' · ' + esc(s.usual_time) : ''}</td>
           <td>${s.classes_count}</td><td>${s.pending_tasks}</td>
           <td><span class="badge ${s.active ? 'impartida' : 'cancelada'}">${s.active ? 'Activo' : 'Inactivo'}</span></td>
